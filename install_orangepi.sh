@@ -3,15 +3,20 @@
 set -e
 
 # ==========================================================
-# Автоматическая настройка Orange Pi
+# Автоматическая настройка Orange Pi / Linux mini PC
 # sudo без пароля + node_exporter + x11vnc + websockify + noVNC
+# + автоперенос kkt-tools в домашний каталог
 # ==========================================================
 
 USERNAME="orangepi"
+VNC_PASSWORD="orangepi"
+
 NODE_EXPORTER_VERSION="1.6.1"
 NODE_EXPORTER_PORT="9100"
 VNC_PORT="5900"
 NOVNC_PORT="8080"
+
+export DEBIAN_FRONTEND=noninteractive
 
 echo "=========================================================="
 echo " Старт настройки Orange Pi"
@@ -33,7 +38,7 @@ fi
 
 if ! id "$USERNAME" >/dev/null 2>&1; then
   echo "Ошибка: пользователь $USERNAME не найден."
-  echo "Если у вас другой пользователь, измените переменную USERNAME в начале скрипта."
+  echo "Если пользователь другой, измени переменную USERNAME в начале скрипта."
   exit 1
 fi
 
@@ -41,6 +46,25 @@ USER_HOME="/home/$USERNAME"
 
 echo "Пользователь для настройки: $USERNAME"
 echo "Домашняя папка: $USER_HOME"
+echo "Пароль VNC/noVNC будет установлен: $VNC_PASSWORD"
+
+# ----------------------------------------------------------
+# Ожидание освобождения apt/dpkg
+# ----------------------------------------------------------
+
+echo
+echo "=========================================================="
+echo " Проверка блокировок apt/dpkg"
+echo "=========================================================="
+
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+      fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+      fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+  echo "apt/dpkg занят другим процессом. Ждём 10 секунд..."
+  sleep 10
+done
+
+dpkg --configure -a || true
 
 # ----------------------------------------------------------
 # 1. Настройка sudo без пароля
@@ -60,7 +84,7 @@ visudo -cf "/etc/sudoers.d/nopasswd-$USERNAME"
 echo "sudo без пароля настроен."
 
 # ----------------------------------------------------------
-# 2. Установка базовых пакетов
+# 2. Установка необходимых пакетов
 # ----------------------------------------------------------
 
 echo
@@ -68,8 +92,8 @@ echo "=========================================================="
 echo " 2. Установка необходимых пакетов"
 echo "=========================================================="
 
-apt update
-apt install -y wget curl tar x11vnc websockify novnc net-tools
+apt-get update
+apt-get install -y wget curl tar git python3 x11vnc websockify novnc net-tools
 
 echo "Пакеты установлены."
 
@@ -99,7 +123,7 @@ case "$ARCH" in
     ;;
   *)
     echo "Ошибка: неподдерживаемая архитектура: $ARCH"
-    echo "Проверьте архитектуру командой: uname -m"
+    echo "Проверь архитектуру командой: uname -m"
     exit 1
     ;;
 esac
@@ -118,8 +142,13 @@ echo "$NODE_EXPORTER_URL"
 
 rm -rf "/tmp/$NODE_EXPORTER_DIR" "/tmp/$NODE_EXPORTER_ARCHIVE"
 
-wget "$NODE_EXPORTER_URL"
+wget --no-hsts "$NODE_EXPORTER_URL"
 tar xvf "$NODE_EXPORTER_ARCHIVE"
+
+echo "Останавливаем node_exporter перед обновлением файла..."
+systemctl stop node_exporter 2>/dev/null || true
+pkill -9 node_exporter 2>/dev/null || true
+sleep 2
 
 cp "$NODE_EXPORTER_DIR/node_exporter" /usr/local/bin/
 chown root:root /usr/local/bin/node_exporter
@@ -146,6 +175,8 @@ User=root
 Group=root
 Type=simple
 ExecStart=/usr/local/bin/node_exporter
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -158,28 +189,24 @@ systemctl restart node_exporter
 echo "node_exporter запущен и добавлен в автозагрузку."
 
 # ----------------------------------------------------------
-# 5. Настройка пароля VNC
+# 5. Автоматическая настройка пароля VNC
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 5. Настройка пароля VNC"
+echo " 5. Автоматическая настройка пароля VNC/noVNC"
 echo "=========================================================="
 
 mkdir -p "$USER_HOME/.vnc"
 chown -R "$USERNAME:$USERNAME" "$USER_HOME/.vnc"
 
-echo
-echo "Сейчас нужно задать пароль для VNC."
-echo "Введите пароль два раза, когда появится запрос."
-echo
-
-sudo -u "$USERNAME" x11vnc -storepasswd "$USER_HOME/.vnc/passwd"
+sudo -u "$USERNAME" x11vnc -storepasswd "$VNC_PASSWORD" "$USER_HOME/.vnc/passwd"
 
 chown "$USERNAME:$USERNAME" "$USER_HOME/.vnc/passwd"
 chmod 600 "$USER_HOME/.vnc/passwd"
 
-echo "Пароль VNC сохранён: $USER_HOME/.vnc/passwd"
+echo "Пароль VNC/noVNC установлен автоматически."
+echo "Файл пароля: $USER_HOME/.vnc/passwd"
 
 # ----------------------------------------------------------
 # 6. Создание systemd-сервиса x11vnc
@@ -258,29 +285,65 @@ systemctl restart websockify.service || true
 echo "Сервисы запущены."
 
 # ----------------------------------------------------------
-# 9. Определение IP-адреса Orange Pi
+# 9. Автоперенос папки kkt-tools в домашний каталог
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 9. Определение IP-адреса"
+echo " 9. Перенос папки kkt-tools в домашний каталог"
+echo "=========================================================="
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_KKT_TOOLS="$SCRIPT_DIR/kkt-tools"
+TARGET_KKT_TOOLS="$USER_HOME/kkt-tools"
+
+if [ -d "$SOURCE_KKT_TOOLS" ]; then
+  echo "Найдена папка kkt-tools:"
+  echo "$SOURCE_KKT_TOOLS"
+
+  if [ -d "$TARGET_KKT_TOOLS" ]; then
+    echo "В домашней папке уже есть kkt-tools. Создаём резервную копию."
+    BACKUP_DIR="$USER_HOME/kkt-tools_backup_$(date +%Y%m%d_%H%M%S)"
+    mv "$TARGET_KKT_TOOLS" "$BACKUP_DIR"
+    echo "Старая папка перенесена в:"
+    echo "$BACKUP_DIR"
+  fi
+
+  cp -r "$SOURCE_KKT_TOOLS" "$TARGET_KKT_TOOLS"
+  chown -R "$USERNAME:$USERNAME" "$TARGET_KKT_TOOLS"
+
+  echo "Папка kkt-tools успешно скопирована в:"
+  echo "$TARGET_KKT_TOOLS"
+else
+  echo "ВНИМАНИЕ: папка kkt-tools не найдена рядом со скриптом."
+  echo "Ожидался путь:"
+  echo "$SOURCE_KKT_TOOLS"
+fi
+
+# ----------------------------------------------------------
+# 10. Определение IP-адреса
+# ----------------------------------------------------------
+
+echo
+echo "=========================================================="
+echo " 10. Определение IP-адреса"
 echo "=========================================================="
 
 IP_ADDRESS="$(hostname -I | awk '{print $1}')"
 
 if [ -z "$IP_ADDRESS" ]; then
-  IP_ADDRESS="IP-АДРЕС-ORANGE-PI"
+  IP_ADDRESS="IP-АДРЕС-МИНИПК"
 fi
 
-echo "IP-адрес Orange Pi: $IP_ADDRESS"
+echo "IP-адрес устройства: $IP_ADDRESS"
 
 # ----------------------------------------------------------
-# 10. Финальная проверка
+# 11. Финальная проверка
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 10. Финальная проверка"
+echo " 11. Финальная проверка"
 echo "=========================================================="
 
 echo
@@ -289,15 +352,15 @@ sudo -u "$USERNAME" sudo whoami || true
 
 echo
 echo "Статус node_exporter:"
-systemctl --no-pager status node_exporter || true
+systemctl is-active node_exporter || true
 
 echo
 echo "Статус x11vnc:"
-systemctl --no-pager status x11vnc.service || true
+systemctl is-active x11vnc.service || true
 
 echo
 echo "Статус websockify:"
-systemctl --no-pager status websockify.service || true
+systemctl is-active websockify.service || true
 
 echo
 echo "Проверка открытых портов:"
@@ -306,6 +369,10 @@ netstat -tlnp | grep -E "$VNC_PORT|$NOVNC_PORT|$NODE_EXPORTER_PORT" || true
 echo
 echo "Проверка метрик node_exporter:"
 curl -s "http://localhost:$NODE_EXPORTER_PORT/metrics" | head || true
+
+echo
+echo "Проверка папки kkt-tools:"
+ls -ld "$TARGET_KKT_TOOLS" || true
 
 # ----------------------------------------------------------
 # Итог
@@ -317,19 +384,24 @@ echo " Настройка завершена"
 echo "=========================================================="
 echo
 echo "Что должно работать:"
-echo "1. sudo без пароля для пользователя: $USERNAME"
+echo
+echo "1. sudo без пароля для пользователя:"
+echo "   $USERNAME"
+echo
 echo "2. node_exporter:"
 echo "   http://$IP_ADDRESS:$NODE_EXPORTER_PORT/metrics"
 echo
-echo "3. Удалённый рабочий стол через браузер:"
+echo "3. Удалённый рабочий стол через браузер noVNC:"
 echo "   http://$IP_ADDRESS:$NOVNC_PORT/vnc.html"
+echo
+echo "4. Пароль VNC/noVNC:"
+echo "   $VNC_PASSWORD"
+echo
+echo "5. Папка kkt-tools:"
+echo "   $TARGET_KKT_TOOLS"
 echo
 echo "Порты:"
 echo "- node_exporter: $NODE_EXPORTER_PORT"
 echo "- x11vnc: $VNC_PORT"
 echo "- noVNC/websockify: $NOVNC_PORT"
-echo
-echo "Если удалённый рабочий стол не открылся, проверьте:"
-echo "sudo systemctl status x11vnc.service"
-echo "sudo systemctl status websockify.service"
 echo
