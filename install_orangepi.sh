@@ -3,9 +3,16 @@
 set -e
 
 # ==========================================================
+# install_orangepi.sh
 # Автоматическая настройка Orange Pi / Linux mini PC
-# sudo без пароля + node_exporter + x11vnc + websockify + noVNC
-# + автоперенос kkt-tools в домашний каталог
+#
+# Что делает:
+# - sudo без пароля для пользователя orangepi
+# - установка node_exporter
+# - установка x11vnc
+# - установка websockify/noVNC
+# - автоматический пароль VNC/noVNC: orangepi
+# - перенос папки kkt-tools в /home/orangepi/kkt-tools
 # ==========================================================
 
 USERNAME="orangepi"
@@ -19,11 +26,11 @@ NOVNC_PORT="8080"
 export DEBIAN_FRONTEND=noninteractive
 
 echo "=========================================================="
-echo " Старт настройки Orange Pi"
+echo " Старт настройки Orange Pi / mini PC"
 echo "=========================================================="
 
 # ----------------------------------------------------------
-# Проверка запуска от root / sudo
+# 0. Проверка запуска от root
 # ----------------------------------------------------------
 
 if [ "$EUID" -ne 0 ]; then
@@ -33,23 +40,23 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ----------------------------------------------------------
-# Проверка пользователя
+# 0.1 Проверка пользователя
 # ----------------------------------------------------------
 
 if ! id "$USERNAME" >/dev/null 2>&1; then
   echo "Ошибка: пользователь $USERNAME не найден."
-  echo "Если пользователь другой, измени переменную USERNAME в начале скрипта."
+  echo "Измени переменную USERNAME в начале скрипта."
   exit 1
 fi
 
 USER_HOME="/home/$USERNAME"
 
-echo "Пользователь для настройки: $USERNAME"
+echo "Пользователь: $USERNAME"
 echo "Домашняя папка: $USER_HOME"
-echo "Пароль VNC/noVNC будет установлен: $VNC_PASSWORD"
+echo "Пароль VNC/noVNC: $VNC_PASSWORD"
 
 # ----------------------------------------------------------
-# Ожидание освобождения apt/dpkg
+# 0.2 Ожидание освобождения apt/dpkg
 # ----------------------------------------------------------
 
 echo
@@ -93,17 +100,27 @@ echo " 2. Установка необходимых пакетов"
 echo "=========================================================="
 
 apt-get update
-apt-get install -y wget curl tar git python3 x11vnc websockify novnc net-tools
+apt-get install -y \
+  wget \
+  curl \
+  tar \
+  git \
+  python3 \
+  x11vnc \
+  websockify \
+  novnc \
+  net-tools \
+  procps
 
 echo "Пакеты установлены."
 
 # ----------------------------------------------------------
-# 3. Определение архитектуры и установка node_exporter
+# 3. Определение архитектуры
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 3. Установка node_exporter"
+echo " 3. Определение архитектуры"
 echo "=========================================================="
 
 ARCH="$(uname -m)"
@@ -123,7 +140,8 @@ case "$ARCH" in
     ;;
   *)
     echo "Ошибка: неподдерживаемая архитектура: $ARCH"
-    echo "Проверь архитектуру командой: uname -m"
+    echo "Проверь архитектуру командой:"
+    echo "uname -m"
     exit 1
     ;;
 esac
@@ -131,18 +149,44 @@ esac
 echo "Архитектура процессора: $ARCH"
 echo "Версия node_exporter: linux-$NODE_ARCH"
 
-cd /tmp
+# ----------------------------------------------------------
+# 4. Установка node_exporter
+# ----------------------------------------------------------
+
+echo
+echo "=========================================================="
+echo " 4. Установка node_exporter"
+echo "=========================================================="
 
 NODE_EXPORTER_ARCHIVE="node_exporter-${NODE_EXPORTER_VERSION}.linux-${NODE_ARCH}.tar.gz"
 NODE_EXPORTER_DIR="node_exporter-${NODE_EXPORTER_VERSION}.linux-${NODE_ARCH}"
 NODE_EXPORTER_URL="https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/${NODE_EXPORTER_ARCHIVE}"
 
-echo "Скачиваем node_exporter:"
-echo "$NODE_EXPORTER_URL"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_NODE_EXPORTER_ARCHIVE="$SCRIPT_DIR/$NODE_EXPORTER_ARCHIVE"
+
+cd /tmp
 
 rm -rf "/tmp/$NODE_EXPORTER_DIR" "/tmp/$NODE_EXPORTER_ARCHIVE"
 
-curl -L --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 -o "$NODE_EXPORTER_ARCHIVE" "$NODE_EXPORTER_URL"
+if [ -f "$LOCAL_NODE_EXPORTER_ARCHIVE" ]; then
+  echo "Используем локальный архив node_exporter из репозитория:"
+  echo "$LOCAL_NODE_EXPORTER_ARCHIVE"
+  cp "$LOCAL_NODE_EXPORTER_ARCHIVE" "/tmp/$NODE_EXPORTER_ARCHIVE"
+else
+  echo "Локальный архив node_exporter не найден."
+  echo "Скачиваем с GitHub:"
+  echo "$NODE_EXPORTER_URL"
+
+  curl -L \
+    --connect-timeout 30 \
+    --max-time 180 \
+    --retry 3 \
+    --retry-delay 5 \
+    -o "$NODE_EXPORTER_ARCHIVE" \
+    "$NODE_EXPORTER_URL"
+fi
+
 tar xvf "$NODE_EXPORTER_ARCHIVE"
 
 echo "Останавливаем node_exporter перед обновлением файла..."
@@ -157,12 +201,12 @@ chmod 755 /usr/local/bin/node_exporter
 echo "node_exporter установлен в /usr/local/bin/node_exporter"
 
 # ----------------------------------------------------------
-# 4. Создание systemd-сервиса node_exporter
+# 5. Создание systemd-сервиса node_exporter
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 4. Настройка сервиса node_exporter"
+echo " 5. Настройка сервиса node_exporter"
 echo "=========================================================="
 
 cat > /etc/systemd/system/node_exporter.service <<EOF
@@ -189,12 +233,12 @@ systemctl restart node_exporter
 echo "node_exporter запущен и добавлен в автозагрузку."
 
 # ----------------------------------------------------------
-# 5. Автоматическая настройка пароля VNC
+# 6. Автоматическая настройка пароля VNC
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 5. Автоматическая настройка пароля VNC/noVNC"
+echo " 6. Автоматическая настройка пароля VNC/noVNC"
 echo "=========================================================="
 
 mkdir -p "$USER_HOME/.vnc"
@@ -209,19 +253,18 @@ echo "Пароль VNC/noVNC установлен автоматически."
 echo "Файл пароля: $USER_HOME/.vnc/passwd"
 
 # ----------------------------------------------------------
-# 6. Создание systemd-сервиса x11vnc
+# 7. Создание systemd-сервиса x11vnc
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 6. Настройка сервиса x11vnc"
+echo " 7. Настройка сервиса x11vnc"
 echo "=========================================================="
 
 cat > /etc/systemd/system/x11vnc.service <<EOF
 [Unit]
 Description=Start x11vnc at startup
 After=graphical.target multi-user.target
-Requires=display-manager.service
 
 [Service]
 Type=simple
@@ -240,12 +283,12 @@ systemctl enable x11vnc.service
 echo "x11vnc-сервис создан и добавлен в автозагрузку."
 
 # ----------------------------------------------------------
-# 7. Создание systemd-сервиса websockify/noVNC
+# 8. Создание systemd-сервиса websockify/noVNC
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 7. Настройка сервиса websockify/noVNC"
+echo " 8. Настройка сервиса websockify/noVNC"
 echo "=========================================================="
 
 cat > /etc/systemd/system/websockify.service <<EOF
@@ -270,12 +313,12 @@ systemctl enable websockify.service
 echo "websockify/noVNC-сервис создан и добавлен в автозагрузку."
 
 # ----------------------------------------------------------
-# 8. Запуск сервисов
+# 9. Запуск сервисов
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 8. Запуск сервисов"
+echo " 9. Запуск сервисов"
 echo "=========================================================="
 
 systemctl restart node_exporter
@@ -285,12 +328,12 @@ systemctl restart websockify.service || true
 echo "Сервисы запущены."
 
 # ----------------------------------------------------------
-# 9. Автоперенос папки kkt-tools в домашний каталог
+# 10. Перенос папки kkt-tools
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 9. Перенос папки kkt-tools в домашний каталог"
+echo " 10. Перенос папки kkt-tools в домашний каталог"
 echo "=========================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -302,10 +345,13 @@ if [ -d "$SOURCE_KKT_TOOLS" ]; then
   echo "$SOURCE_KKT_TOOLS"
 
   if [ -d "$TARGET_KKT_TOOLS" ]; then
-    echo "В домашней папке уже есть kkt-tools. Создаём резервную копию."
+    echo "В домашней папке уже есть kkt-tools."
+    echo "Создаём резервную копию."
+
     BACKUP_DIR="$USER_HOME/kkt-tools_backup_$(date +%Y%m%d_%H%M%S)"
     mv "$TARGET_KKT_TOOLS" "$BACKUP_DIR"
-    echo "Старая папка перенесена в:"
+
+    echo "Старая папка сохранена здесь:"
     echo "$BACKUP_DIR"
   fi
 
@@ -315,18 +361,25 @@ if [ -d "$SOURCE_KKT_TOOLS" ]; then
   echo "Папка kkt-tools успешно скопирована в:"
   echo "$TARGET_KKT_TOOLS"
 else
-  echo "ВНИМАНИЕ: папка kkt-tools не найдена рядом со скриптом."
+  echo "ОШИБКА: папка kkt-tools не найдена рядом со скриптом."
   echo "Ожидался путь:"
   echo "$SOURCE_KKT_TOOLS"
+  echo
+  echo "Проверь структуру репозитория:"
+  echo "Kkt_commander-2.1/"
+  echo "├── install_orangepi.sh"
+  echo "├── kkt-tools/"
+  echo "└── README.md"
+  exit 1
 fi
 
 # ----------------------------------------------------------
-# 10. Определение IP-адреса
+# 11. Определение IP-адреса
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 10. Определение IP-адреса"
+echo " 11. Определение IP-адреса"
 echo "=========================================================="
 
 IP_ADDRESS="$(hostname -I | awk '{print $1}')"
@@ -338,12 +391,12 @@ fi
 echo "IP-адрес устройства: $IP_ADDRESS"
 
 # ----------------------------------------------------------
-# 11. Финальная проверка
+# 12. Финальная проверка
 # ----------------------------------------------------------
 
 echo
 echo "=========================================================="
-echo " 11. Финальная проверка"
+echo " 12. Финальная проверка"
 echo "=========================================================="
 
 echo
@@ -385,13 +438,13 @@ echo "=========================================================="
 echo
 echo "Что должно работать:"
 echo
-echo "1. sudo без пароля для пользователя:"
-echo "   $USERNAME"
+echo "1. sudo без пароля:"
+echo "   пользователь $USERNAME"
 echo
 echo "2. node_exporter:"
 echo "   http://$IP_ADDRESS:$NODE_EXPORTER_PORT/metrics"
 echo
-echo "3. Удалённый рабочий стол через браузер noVNC:"
+echo "3. noVNC через браузер:"
 echo "   http://$IP_ADDRESS:$NOVNC_PORT/vnc.html"
 echo
 echo "4. Пароль VNC/noVNC:"
@@ -405,3 +458,4 @@ echo "- node_exporter: $NODE_EXPORTER_PORT"
 echo "- x11vnc: $VNC_PORT"
 echo "- noVNC/websockify: $NOVNC_PORT"
 echo
+echo "Готово."
