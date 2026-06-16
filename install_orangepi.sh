@@ -142,7 +142,7 @@ echo "$NODE_EXPORTER_URL"
 
 rm -rf "/tmp/$NODE_EXPORTER_DIR" "/tmp/$NODE_EXPORTER_ARCHIVE"
 
-wget --no-hsts "$NODE_EXPORTER_URL"
+curl -L --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 -o "$NODE_EXPORTER_ARCHIVE" "$NODE_EXPORTER_URL"
 tar xvf "$NODE_EXPORTER_ARCHIVE"
 
 echo "Останавливаем node_exporter перед обновлением файла..."
